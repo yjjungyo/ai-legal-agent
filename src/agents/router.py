@@ -39,7 +39,9 @@ ROUTER_PROMPT = PromptTemplate.from_template(
 def route_categories(question: str) -> list[str]:
     """LLM으로 카테고리 배열을 분류. 실패 시 최소한 하나(민법)로 폴백."""
     llm = get_temp_llm(0.0)
-    prompt = ROUTER_PROMPT.format(categories=", ".join(CATEGORIES), question=question)
+    # 첨부 파일 포함 등으로 질문이 매우 긴 경우 라우팅에 충분한 상위 2500자 활용 (토큰 절약 및 지연시간 단축)
+    q_trimmed = question[:2500] if len(question) > 2500 else question
+    prompt = ROUTER_PROMPT.format(categories=", ".join(CATEGORIES), question=q_trimmed)
     res = llm.invoke(prompt)
     text = (getattr(res, "content", str(res)) or "").strip()
     try:

@@ -88,11 +88,12 @@ def rewrite_query(question: str, category_ko: str, *, max_terms: int = 3) -> str
     """
     q = (question or "").strip().replace("\n", " ")
 
-    # 1) LLM 시도
+    # 1) LLM 시도 (첨부 문서 포함 시 검색 키워드 추출용으로 상위 1500자 활용)
     terms: List[str] = []
+    q_for_prompt = q[:1500] if len(q) > 1500 else q
     try:
         llm = get_temp_llm(0)  # 엄격 또는, 약간의 다양성만 허용 #변수화 필요
-        prompt = LLM_REWRITE_PROMPT.format(category=category_ko, question=q)
+        prompt = LLM_REWRITE_PROMPT.format(category=category_ko, question=q_for_prompt)
         raw = llm.invoke(prompt)
         text = (getattr(raw, "content", str(raw)) or "").strip()
         terms = _parse_terms(text)[:max_terms]

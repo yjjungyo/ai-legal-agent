@@ -145,3 +145,6 @@ xxhash==3.5.0
 yarl==1.20.1
 zipp==3.23.0
 zstandard==0.24.0
+
+python-docx==1.2.0
+pypdf==6.20.0

@@ -35,13 +35,19 @@ from src.db import (
 # --- LangGraph 멀티에이전트 그래프 ---
 from src.agents.workflow import build_legal_graph
 from src.utils.tracing import langfuse_config
+from src.utils.file_parser import (
+    SUPPORTED_EXTENSIONS,
+    process_uploaded_file,
+    format_llm_input,
+    format_chat_display_message,
+)
 
 
 
 # -----------------------------------------------------------------------------
 # Streamlit 페이지 설정
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="AI 법률 정보 서비스", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="LegalRag - AI 법률 정보 서비스", page_icon="⚖️", layout="wide")
 st.title("⚖️ AI 법률 정보 서비스")
 st.subheader(f"{CATEGORIES} 8개 분야 AI 법률 전문가 상시 대기 중 !!!")
 
@@ -241,56 +247,111 @@ if st.session_state.idx_panel_open:
 if not st.session_state.chat_id:
     st.info("좌측에서 **새 채팅**을 눌러 시작하거나, 기존 채팅을 선택하세요.")
 else:
-    # 기존 메시지 렌더링 (DB 저장 기준)
+    # 기존 메시지 렌더링 (DB 저장 기준, HTML 세부정보 렌더링 허용)
     for role, content in get_chat_messages(st.session_state.chat_id):
         with st.chat_message(role):
-            st.markdown(content)
+            st.markdown(content, unsafe_allow_html=True)
 
-    # 입력창
-    if q := st.chat_input("질문을 입력하세요 (예: 전세보증금 반환 절차는?)"):
-        logger.debug("[UI] 사용자 질문 입력(len=%d)", len(q))
+    # 상단 보조 첨부 패널 (선택사항: 드래그 앤 드롭 또는 브라우징용)
+    with st.expander("📎 파일 첨부 (계약서, 내용증명, 판결문, 서류 이미지 등)", expanded=False):
+        manual_files = st.file_uploader(
+            "문서 또는 이미지 파일 첨부",
+            type=SUPPORTED_EXTENSIONS,
+            accept_multiple_files=True,
+            key=f"file_uploader_{st.session_state.chat_id}",
+            help="PDF, Word(.docx), TXT, 이미지(PNG/JPG) 등을 업로드하면 AI가 문서를 직접 분석합니다.",
+        )
+        if manual_files:
+            st.caption(f"선택된 파일: {', '.join(f.name for f in manual_files)} (하단 채팅창에서 전송 시 함께 분석됩니다)")
 
-        # 1) DB에 사용자 메시지 저장 & 화면 표시
-        add_message(st.session_state.chat_id, "user", q)
-        with st.chat_message("user"):
-            st.markdown(q)
+    # 채팅 입력창 (Streamlit 1.66 네이티브 파일 첨부 클립 지원)
+    user_input = st.chat_input(
+        "질문을 입력하거나 법률 문서를 첨부하세요 (예: 전세계약서 특약 효력 검토)",
+        accept_file="multiple",
+        file_type=SUPPORTED_EXTENSIONS,
+    )
 
-        # 2) LangGraph 멀티에이전트 실행
-        with st.chat_message("assistant"):
-            with st.spinner("분석/검색 중…"):
-                try:
-                    # thread_id를 chat_id와 매핑(멀티턴 메모리 일관성)
-                    thread_id = f"chat-{st.session_state.chat_id}"
+    if user_input:
+        # 입력 텍스트 및 첨부 파일 추출
+        if hasattr(user_input, "text"):
+            q_text = (user_input.text or "").strip()
+            chat_files = getattr(user_input, "files", []) if "files" in user_input else []
+        else:
+            q_text = str(user_input).strip()
+            chat_files = []
 
-                    # LangGraph MessagesState 포맷: [("user", q)]
-                    inputs = {"messages": [("user", q)]}
+        # chat_input 첨부 파일과 보조 업로더 파일 통합 (중복 파일명 방지)
+        all_file_objs = []
+        seen_names = set()
+        for f in (chat_files or []) + (manual_files or []):
+            if f.name not in seen_names:
+                all_file_objs.append(f)
+                seen_names.add(f.name)
 
-                    logger.debug("[APP] graph.invoke 시작 (thread_id=%s)", thread_id)
-                    with langfuse_config(thread_id) as config:
-                        result = GRAPH.invoke(inputs, config=config)
-                    logger.debug("[APP] graph.invoke 완료")
+        # 텍스트가 없고 파일만 첨부된 경우 기본 안내 질의 설정
+        if not q_text and all_file_objs:
+            q_text = "첨부된 문서를 종합 검토하여 주요 법률적 쟁점, 권리관계 및 유의사항을 분석해 주세요."
 
-                    # 3) 결과 메시지 중 마지막 AI 응답 추출
-                    ai_text = None
-                    for m in reversed(result["messages"]):
-                        if m.type == "ai":
-                            ai_text = m.content
-                            break
-                    ai_text = ai_text or "(응답 생성 실패)"
+        if q_text or all_file_objs:
+            logger.debug("[UI] 사용자 입력 (q_len=%d, files=%d)", len(q_text), len(all_file_objs))
 
-                    # 4) 화면 출력 & DB 저장
-                    st.markdown(ai_text)
-                    add_message(st.session_state.chat_id, "assistant", ai_text)
-                    logger.debug("[APP] 응답 저장(len=%d)", len(ai_text))
+            # 1) 첨부 파일 분석 및 텍스트 추출 (진행 스피너)
+            attachments = []
+            if all_file_objs:
+                with st.spinner("📎 첨부 파일 분석 및 텍스트 추출 중..."):
+                    for file_obj in all_file_objs:
+                        att_data = process_uploaded_file(file_obj, st.session_state.chat_id)
+                        attachments.append(att_data)
+                        logger.debug("[UI] 파일 분석 완료: %s (%d chars)", att_data.filename, len(att_data.extracted_text))
 
-                except Exception as e:
-                    logger.exception("[APP] 멀티에이전트 실행 실패")
-                    st.error(f"오류가 발생했습니다: {e}")
+            # 2) 화면 표시 및 DB 저장용 마크다운 구성
+            display_msg = format_chat_display_message(q_text, attachments)
+            add_message(st.session_state.chat_id, "user", display_msg)
+            with st.chat_message("user"):
+                st.markdown(display_msg, unsafe_allow_html=True)
 
-        # 첫 메시지로 제목 자동 제안
-        if not st.session_state.proposed_title:
-            st.session_state.proposed_title = q[:20]
-            rename_chat(st.session_state.chat_id, st.session_state.proposed_title)
+            # 3) LLM 호출용 첨부 문서 포함 통합 프롬프트 생성
+            llm_query = format_llm_input(q_text, attachments)
+
+            # 4) LangGraph 멀티에이전트 실행
+            with st.chat_message("assistant"):
+                with st.spinner("분석/검색 중…"):
+                    try:
+                        # thread_id를 chat_id와 매핑(멀티턴 메모리 일관성)
+                        thread_id = f"chat-{st.session_state.chat_id}"
+
+                        # LangGraph MessagesState 포맷: [("user", llm_query)]
+                        inputs = {"messages": [("user", llm_query)]}
+
+                        logger.debug("[APP] graph.invoke 시작 (thread_id=%s)", thread_id)
+                        with langfuse_config(thread_id) as config:
+                            result = GRAPH.invoke(inputs, config=config)
+                        logger.debug("[APP] graph.invoke 완료")
+
+                        # 결과 메시지 중 마지막 AI 응답 추출
+                        ai_text = None
+                        for m in reversed(result["messages"]):
+                            if m.type == "ai":
+                                ai_text = m.content
+                                break
+                        ai_text = ai_text or "(응답 생성 실패)"
+
+                        # 화면 출력 & DB 저장
+                        st.markdown(ai_text)
+                        add_message(st.session_state.chat_id, "assistant", ai_text)
+                        logger.debug("[APP] 응답 저장(len=%d)", len(ai_text))
+
+                    except Exception as e:
+                        logger.exception("[APP] 멀티에이전트 실행 실패")
+                        st.error(f"오류가 발생했습니다: {e}")
+
+            # 첫 메시지로 제목 자동 제안
+            if not st.session_state.proposed_title:
+                if attachments:
+                    st.session_state.proposed_title = f"[{attachments[0].filename[:10]}] {q_text[:12]}"
+                else:
+                    st.session_state.proposed_title = q_text[:20]
+                rename_chat(st.session_state.chat_id, st.session_state.proposed_title)
 
 # 하단 안내
 st.caption("※ 본 서비스는 AI Bootcamp 최종 과제 제출용이며 법률자문이 아닙니다.")
