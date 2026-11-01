@@ -112,11 +112,3 @@ AOAI 사용을 위한 키 정보는 다음과 같으며 과제 진행 외 다른
 임베딩 모델은 동시 사용량에 제한이 있으므로 응답이 없을 경우 다른 시간대에 다시 시도해주세요.
 
 제공되는 키는 사내망에서만 사용 가능하며 키 관련 문의는 김재혁 매니저에게 주시면 됩니다.
-
-AOAI_ENDPOINT=https://your-endpoint.openai.azure.com/
-AOAI_API_KEY=your-aoai-api-key
-AOAI_DEPLOY_GPT4O_MINI=gpt-4o-mini
-AOAI_DEPLOY_GPT4O=gpt-4o
-AOAI_DEPLOY_EMBED_3_LARGE=text-embedding-3-large
-AOAI_DEPLOY_EMBED_3_SMALL=text-embedding-3-small
-AOAI_DEPLOY_EMBED_ADA=text-embedding-ada-002
