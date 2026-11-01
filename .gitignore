@@ -26,3 +26,7 @@ ENV/
 .vscode/
 .idea/
 .DS_Store
+
+# Task specifications
+task.md
+
